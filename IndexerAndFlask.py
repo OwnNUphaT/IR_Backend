@@ -66,7 +66,7 @@ def login():
 # Recipe Indexing Class
 class RecipeIndexer:
     def __init__(self, file_path='resource/recipes.csv', is_reset=False):
-        self.stored_file = 'resource/recipes_pikel.pkl'
+        self.stored_file = 'resource/recipes_pickle.pkl'
         self.file_path = file_path
 
         if not is_reset and os.path.isfile(self.stored_file):
