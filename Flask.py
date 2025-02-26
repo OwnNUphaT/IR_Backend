@@ -79,11 +79,17 @@ class RecipeIndexer:
         else:
             self.run_indexer()
 
-    def preprocess_text(self, text):
-        """Cleans the text data by removing unwanted characters and formatting."""
+    def preprocess_text(self, text, column=None):
+        """Cleans text data by removing unwanted characters and keeping only one image link."""
         if isinstance(text, str):
-            text = re.sub(r'^c["\s]*', '', text)  # Remove leading 'c' followed by optional quotes or spaces
-            text = re.sub(r'[^\w\s./:-]', '', text.lower()).strip()  # Keep valid characters (for images/URLs)
+            text = re.sub(r'^c["\s]*', '', text)  # Remove leading 'c', quotes, and spaces
+
+            if column == 'Images':
+                # Extract all valid URLs
+                urls = re.findall(r'https?://\S+', text)
+                return urls[0] if urls else text  # Keep only the first URL if multiple exist
+
+            text = re.sub(r'[^\w\s./:-]', '', text.lower()).strip()  # Keep valid characters
         return text
 
     def run_indexer(self):
@@ -91,8 +97,11 @@ class RecipeIndexer:
         df = pd.read_csv(self.file_path)
 
         # Apply preprocessing to clean unwanted `c` and formatting issues
-        for column in ['Description', 'RecipeIngredientParts', 'RecipeInstructions', 'Images']:
-            df[column] = df[column].astype(str).apply(self.preprocess_text)
+        for column in ['Description', 'RecipeIngredientParts', 'RecipeInstructions']:
+            df[column] = df[column].astype(str).apply(lambda x: self.preprocess_text(x))
+
+        # Special handling for Images: Remove multiple links and keep only one
+        df['Images'] = df['Images'].astype(str).apply(lambda x: self.preprocess_text(x, column='Images'))
 
         df['text_data'] = df[['Description', 'RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join,
                                                                                                             axis=1)
