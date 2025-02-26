@@ -97,13 +97,13 @@ class RecipeIndexer:
         df = pd.read_csv(self.file_path)
 
         # Apply preprocessing to clean unwanted `c` and formatting issues
-        for column in ['Description', 'RecipeIngredientParts', 'RecipeInstructions']:
+        for column in ['RecipeIngredientParts', 'RecipeInstructions']:
             df[column] = df[column].astype(str).apply(lambda x: self.preprocess_text(x))
 
         # Special handling for Images: Remove multiple links and keep only one
         df['Images'] = df['Images'].astype(str).apply(lambda x: self.preprocess_text(x, column='Images'))
 
-        df['text_data'] = df[['Description', 'RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join,
+        df['text_data'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join,
                                                                                                             axis=1)
         corpus = df['text_data'].tolist()
 
