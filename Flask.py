@@ -85,8 +85,7 @@ class RecipeIndexer:
 
     def run_indexer(self):
         df = pd.read_csv(self.file_path)
-        df['text_data'] = df[['Description', 'RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join,
-                                                                                                            axis=1)
+        df['text_data'] = df[['Description', 'RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join,axis=1)
         corpus = df['text_data'].apply(self.preprocess_text).tolist()
 
         self.vectorizer = TfidfVectorizer(stop_words='english')
