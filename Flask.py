@@ -102,7 +102,7 @@ class RecipeIndexer:
         self.recipes_df['score'] = similarity_scores
         return self.recipes_df.nlargest(top_n, 'score')[
             ['RecipeId', 'Name', 'Images', 'Description', 'RecipeIngredientParts', 'RecipeInstructions',
-             'score']].to_dict('records')
+             'score', 'TotalTime', 'Calories']].to_dict('records')
 
 
 # Initialize Indexer
