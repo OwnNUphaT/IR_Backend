@@ -63,7 +63,6 @@ def login():
     return jsonify({'status': 'success', 'token': token})
 
 
-# Recipe Indexing Class
 class RecipeIndexer:
     def __init__(self, file_path='resource/recipes.csv', is_reset=False):
         self.stored_file = 'resource/recipes_pickle.pkl'
@@ -81,27 +80,41 @@ class RecipeIndexer:
             self.run_indexer()
 
     def preprocess_text(self, text):
-        return re.sub(r'[^\w\s]', '', text.lower()).strip()
+        """Cleans the text data by removing unwanted characters and formatting."""
+        if isinstance(text, str):
+            text = re.sub(r'^c["\s]*', '', text)  # Remove leading 'c' followed by optional quotes or spaces
+            text = re.sub(r'[^\w\s./:-]', '', text.lower()).strip()  # Keep valid characters (for images/URLs)
+        return text
 
     def run_indexer(self):
+        """Reads the CSV, processes text data, and indexes it."""
         df = pd.read_csv(self.file_path)
-        df['text_data'] = df[['Description', 'RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join,axis=1)
-        corpus = df['text_data'].apply(self.preprocess_text).tolist()
+
+        # Apply preprocessing to clean unwanted `c` and formatting issues
+        for column in ['Description', 'RecipeIngredientParts', 'RecipeInstructions', 'Images']:
+            df[column] = df[column].astype(str).apply(self.preprocess_text)
+
+        df['text_data'] = df[['Description', 'RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join,
+                                                                                                            axis=1)
+        corpus = df['text_data'].tolist()
 
         self.vectorizer = TfidfVectorizer(stop_words='english')
         self.tfidf_matrix = self.vectorizer.fit_transform(corpus)
         self.recipes_df = df
 
+        # Save the cleaned index
         with open(self.stored_file, 'wb') as f:
             pickle.dump(self.__dict__, f)
 
     def search_query(self, query, top_n=10):
+        """Searches for relevant recipes based on the input query."""
         query_vector = self.vectorizer.transform([self.preprocess_text(query)])
         similarity_scores = cosine_similarity(query_vector, self.tfidf_matrix).flatten()
         self.recipes_df['score'] = similarity_scores
         return self.recipes_df.nlargest(top_n, 'score')[
             ['RecipeId', 'Name', 'Images', 'Description', 'RecipeIngredientParts', 'RecipeInstructions',
-             'score', 'TotalTime', 'Calories']].to_dict('records')
+             'score', 'TotalTime', 'Calories']
+        ].to_dict('records')
 
 
 # Initialize Indexer
