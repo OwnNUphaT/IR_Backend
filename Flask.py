@@ -87,7 +87,7 @@ class RecipeIndexer:
             if column == 'Images':
                 # Extract all valid URLs
                 urls = re.findall(r'https?://\S+', text)
-                return urls[0] if urls else text  # Keep only the first URL if multiple exist
+                return urls[0] if urls else ''  # Keep only the first URL if multiple exist
 
             text = re.sub(r'[^\w\s./:-]', '', text.lower()).strip()  # Keep valid characters
         return text
@@ -103,8 +103,7 @@ class RecipeIndexer:
         # Special handling for Images: Remove multiple links and keep only one
         df['Images'] = df['Images'].astype(str).apply(lambda x: self.preprocess_text(x, column='Images'))
 
-        df['text_data'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join,
-                                                                                                            axis=1)
+        df['text_data'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join, axis=1)
         corpus = df['text_data'].tolist()
 
         self.vectorizer = TfidfVectorizer(stop_words='english')
@@ -115,12 +114,38 @@ class RecipeIndexer:
         with open(self.stored_file, 'wb') as f:
             pickle.dump(self.__dict__, f)
 
-    def search_query(self, query, top_n=10):
+    def assign_nearest_image(self, recipe_index):
+        """Assigns the nearest recipe image if an image is missing."""
+        if self.recipes_df.loc[recipe_index, 'Images']:
+            return self.recipes_df.loc[recipe_index, 'Images']
+
+        # Compute similarity with other recipes
+        similarity_scores = cosine_similarity(
+            self.tfidf_matrix[recipe_index], self.tfidf_matrix
+        ).flatten()
+
+        # Find nearest neighbor with an image
+        sorted_indices = similarity_scores.argsort()[::-1]
+        for idx in sorted_indices:
+            if idx != recipe_index and self.recipes_df.loc[idx, 'Images']:
+                return self.recipes_df.loc[idx, 'Images']
+
+        return ''  # If no image is found, return empty string
+
+    def search_query(self, query, top_n=50):
         """Searches for relevant recipes based on the input query."""
         query_vector = self.vectorizer.transform([self.preprocess_text(query)])
         similarity_scores = cosine_similarity(query_vector, self.tfidf_matrix).flatten()
         self.recipes_df['score'] = similarity_scores
-        return self.recipes_df.nlargest(top_n, 'score')[
+
+        top_results = self.recipes_df.nlargest(top_n, 'score').copy()
+
+        # Assign nearest image if missing
+        for index in top_results.index:
+            if not top_results.at[index, 'Images']:
+                top_results.at[index, 'Images'] = self.assign_nearest_image(index)
+
+        return top_results[
             ['RecipeId', 'Name', 'Images', 'Description', 'RecipeIngredientParts', 'RecipeInstructions',
              'score', 'TotalTime', 'Calories']
         ].to_dict('records')
@@ -133,7 +158,7 @@ indexer = RecipeIndexer()
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('query', '')
-    results = indexer.search_query(query, top_n=10)
+    results = indexer.search_query(query, top_n=50)
     return jsonify({'status': 'success', 'results': results})
 
 
