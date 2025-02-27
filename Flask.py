@@ -35,34 +35,6 @@ def verify_token(token):
     except:
         return None
 
-
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-
-    if username in users:
-        return jsonify({'status': 'error', 'message': 'User already exists'}), 400
-
-    hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    users[username] = hashed_pw
-    return jsonify({'status': 'success', 'message': 'User registered'})
-
-
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-
-    if username not in users or not bcrypt.checkpw(password.encode(), users[username].encode()):
-        return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
-
-    token = generate_token(username)
-    return jsonify({'status': 'success', 'token': token})
-
-
 class RecipeIndexer:
     def __init__(self, file_path='resource/recipes.csv', is_reset=False):
         self.stored_file = 'resource/recipes_pickle.pkl'
@@ -154,6 +126,31 @@ class RecipeIndexer:
 # Initialize Indexer
 indexer = RecipeIndexer()
 
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+
+    if username in users:
+        return jsonify({'status': 'error', 'message': 'User already exists'}), 400
+
+    hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    users[username] = hashed_pw
+    return jsonify({'status': 'success', 'message': 'User registered'})
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+
+    if username not in users or not bcrypt.checkpw(password.encode(), users[username].encode()):
+        return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
+
+    token = generate_token(username)
+    return jsonify({'status': 'success', 'token': token})
 
 @app.route('/search', methods=['GET'])
 def search():
