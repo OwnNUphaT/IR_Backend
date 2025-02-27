@@ -19,21 +19,7 @@ app.config['SECRET_KEY'] = 'your_secret_key'
 
 # User Data Storage (Mock Database)
 users = {}
-bookmarks = {}
 
-
-# User Authentication (JWT)
-def generate_token(username):
-    expiration = datetime.utcnow() + timedelta(days=1)
-    return jwt.encode({'username': username, 'exp': expiration}, app.config['SECRET_KEY'], algorithm='HS256')
-
-
-def verify_token(token):
-    try:
-        data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-        return data['username']
-    except:
-        return None
 
 class RecipeIndexer:
     def __init__(self, file_path='resource/recipes.csv', is_reset=False):
@@ -51,30 +37,26 @@ class RecipeIndexer:
         else:
             self.run_indexer()
 
-    def preprocess_text(self, text, column=None):
-        """Cleans text data by removing unwanted characters and keeping only one image link."""
-        if isinstance(text, str):
-            text = re.sub(r'^c["\s]*', '', text)  # Remove leading 'c', quotes, and spaces
+    @staticmethod
+    def preprocess_text(text):
+        """Preprocess text by removing special characters and converting to lowercase."""
+        text = text.lower()
+        text = re.sub(r"^c[\"\s]*", "", text)  # Remove leading 'c', quotes, and spaces
+        text = re.sub(r"[^\w\s./:-]", "", text)  # Keep valid characters
+        text = re.sub(r"\s+", " ", text).strip()
 
-            if column == 'Images':
-                # Extract all valid URLs
-                urls = re.findall(r'https?://\S+', text)
-                return urls[0] if urls else ''  # Keep only the first URL if multiple exist
-
-            text = re.sub(r'[^\w\s./:-]', '', text.lower()).strip()  # Keep valid characters
         return text
 
     def run_indexer(self):
         """Reads the CSV, processes text data, and indexes it."""
         df = pd.read_csv(self.file_path)
 
-        # Apply preprocessing to clean unwanted `c` and formatting issues
-        for column in ['RecipeIngredientParts', 'RecipeInstructions']:
-            df[column] = df[column].astype(str).apply(lambda x: self.preprocess_text(x))
+        # Process relevant fields
+        df['RecipeIngredientParts'] = df['RecipeIngredientParts'].astype(str).apply(self.preprocess_text)
+        df['RecipeInstructions'] = df['RecipeInstructions'].astype(str).apply(self.preprocess_text)
+        df['Images'] = df['Images'].astype(str).apply(self.preprocess_text)
 
-        # Special handling for Images: Remove multiple links and keep only one
-        df['Images'] = df['Images'].astype(str).apply(lambda x: self.preprocess_text(x, column='Images'))
-
+        # Combine 'title' and 'text' for indexing
         df['text_data'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join, axis=1)
         corpus = df['text_data'].tolist()
 
@@ -82,49 +64,27 @@ class RecipeIndexer:
         self.tfidf_matrix = self.vectorizer.fit_transform(corpus)
         self.recipes_df = df
 
-        # Save the cleaned index
         with open(self.stored_file, 'wb') as f:
             pickle.dump(self.__dict__, f)
 
-    def assign_nearest_image(self, recipe_index):
-        """Assigns the nearest recipe image if an image is missing."""
-        if self.recipes_df.loc[recipe_index, 'Images']:
-            return self.recipes_df.loc[recipe_index, 'Images']
-
-        # Compute similarity with other recipes
-        similarity_scores = cosine_similarity(
-            self.tfidf_matrix[recipe_index], self.tfidf_matrix
-        ).flatten()
-
-        # Find nearest neighbor with an image
-        sorted_indices = similarity_scores.argsort()[::-1]
-        for idx in sorted_indices:
-            if idx != recipe_index and self.recipes_df.loc[idx, 'Images']:
-                return self.recipes_df.loc[idx, 'Images']
-
-        return ''  # If no image is found, return empty string
+        print("TF-IDF index created successfully.")
 
     def search_query(self, query, top_n=50):
-        """Searches for relevant recipes based on the input query."""
-        query_vector = self.vectorizer.transform([self.preprocess_text(query)])
+        query = self.preprocess_text(query)
+        query_vector = self.vectorizer.transform([query])
         similarity_scores = cosine_similarity(query_vector, self.tfidf_matrix).flatten()
+
         self.recipes_df['score'] = similarity_scores
+        results_df = self.recipes_df.nlargest(top_n, 'score').copy()
 
-        top_results = self.recipes_df.nlargest(top_n, 'score').copy()
-
-        # Assign nearest image if missing
-        for index in top_results.index:
-            if not top_results.at[index, 'Images']:
-                top_results.at[index, 'Images'] = self.assign_nearest_image(index)
-
-        return top_results[
-            ['RecipeId', 'Name', 'Images', 'Description', 'RecipeIngredientParts', 'RecipeInstructions',
-             'score', 'TotalTime', 'Calories']
-        ].to_dict('records')
+        return results_df[
+            ['RecipeId', 'Name', 'Description','Images' , 'RecipeIngredientParts', 'RecipeInstructions', 'score', 'TotalTime',
+             'Calories']].to_dict('records')
 
 
 # Initialize Indexer
 indexer = RecipeIndexer()
+
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -149,15 +109,20 @@ def login():
     if username not in users or not bcrypt.checkpw(password.encode(), users[username].encode()):
         return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
 
-    token = generate_token(username)
+    token = jwt.encode({'username': username, 'exp': datetime.utcnow() + timedelta(days=1)}, app.config['SECRET_KEY'],
+                       algorithm='HS256')
     return jsonify({'status': 'success', 'token': token})
+
 
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('query', '')
-    results = indexer.search_query(query, top_n=50)
-    return jsonify({'status': 'success', 'results': results})
+    try:
+        results = indexer.search_query(query, top_n=50)
+        return jsonify({'status': 'success', 'results': results})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
