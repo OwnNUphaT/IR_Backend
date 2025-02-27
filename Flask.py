@@ -42,8 +42,22 @@ class RecipeIndexer:
         """Preprocess text by removing special characters and converting to lowercase."""
         text = text.lower()
         text = re.sub(r"^c[\"\s]*", "", text)  # Remove leading 'c', quotes, and spaces
-        text = re.sub(r"[^\w\s./:-]", "", text)  # Keep valid characters
+        text = re.sub(r"[^\w\s.,/:-]", "", text)  # Keep valid characters
         text = re.sub(r"\s+", " ", text).strip()
+
+        return text
+
+    @staticmethod
+    def preprocess_img(text):
+        """Preprocess text by removing 'c(" ")" formatting and ensuring URLs remain intact."""
+        text = text.strip()
+
+        # Remove `c("` from the start and `")` from the end
+        text = re.sub(r'^c\(["\s]*', '', text)
+        text = re.sub(r'["\s]*\)$', '', text)
+
+        # Ensure proper comma separation for list items
+        text = text.replace('", "', '",\n"')  # Adds newlines for clarity in lists
 
         return text
 
@@ -54,7 +68,7 @@ class RecipeIndexer:
         # Process relevant fields
         df['RecipeIngredientParts'] = df['RecipeIngredientParts'].astype(str).apply(self.preprocess_text)
         df['RecipeInstructions'] = df['RecipeInstructions'].astype(str).apply(self.preprocess_text)
-        df['Images'] = df['Images'].astype(str).apply(self.preprocess_text)
+        df['Images'] = df['Images'].astype(str).apply(self.preprocess_img)
 
         # Combine 'title' and 'text' for indexing
         df['text_data'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join, axis=1)
