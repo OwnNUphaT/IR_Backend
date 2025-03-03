@@ -22,7 +22,7 @@ users = {}
 
 
 class RecipeIndexer:
-    def __init__(self, file_path='resource/recipes.csv', is_reset=False):
+    def __init__(self, file_path='resource/completed_recipes.csv', is_reset=False):
         self.stored_file = 'resource/recipes_pickle.pkl'
         self.file_path = file_path
 
@@ -49,17 +49,18 @@ class RecipeIndexer:
 
     @staticmethod
     def preprocess_img(text):
-        """Preprocess text by removing 'c(" ")" formatting and ensuring URLs remain intact."""
-        text = text.strip()
+        """Cleans image links by removing 'c("...")' format and fixing leading/trailing quotes."""
+        if not isinstance(text, str) or not text.strip():
+            return ""  # Return empty if the field is missing or not a string
 
-        # Remove `c("` from the start and `")` from the end
-        text = re.sub(r'^c\(["\s]*', '', text)
-        text = re.sub(r'["\s]*\)$', '', text)
+        # Remove c(" at the start and ") at the end
+        text = re.sub(r'^c\(["\s]*', '', text)  # Remove 'c("'
+        text = re.sub(r'["\s]*\)$', '', text)  # Remove '")'
 
-        # Ensure proper comma separation for list items
-        text = text.replace('", "', '",\n"')  # Adds newlines for clarity in lists
+        # Remove any leading and trailing quotes
+        text = re.sub(r'^"+|"+$', '', text)
 
-        return text
+        return text.strip()
 
     def run_indexer(self):
         """Reads the CSV, processes text data, and indexes it."""
@@ -68,7 +69,7 @@ class RecipeIndexer:
         # Process relevant fields
         df['RecipeIngredientParts'] = df['RecipeIngredientParts'].astype(str).apply(self.preprocess_text)
         df['RecipeInstructions'] = df['RecipeInstructions'].astype(str).apply(self.preprocess_text)
-        df['Images'] = df['Images'].astype(str).apply(self.preprocess_img)
+        df['image_link'] = df['image_link'].astype(str).apply(self.preprocess_img)
 
         # Combine 'title' and 'text' for indexing
         df['text_data'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join, axis=1)
@@ -92,7 +93,7 @@ class RecipeIndexer:
         results_df = self.recipes_df.nlargest(top_n, 'score').copy()
 
         return results_df[
-            ['RecipeId', 'Name', 'Description','Images' , 'RecipeIngredientParts', 'RecipeInstructions', 'score', 'TotalTime',
+            ['RecipeId', 'Name', 'Description','image_link' , 'RecipeIngredientParts', 'RecipeInstructions', 'score', 'TotalTime',
              'Calories']].to_dict('records')
 
 
