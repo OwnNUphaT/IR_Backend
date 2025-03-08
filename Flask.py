@@ -47,18 +47,30 @@ class RecipeIndexer:
         return text
 
     @staticmethod
-    def preprocess_img(text):
+    def extract_image_url(text):
+        """Extract and clean the image URL from various formats."""
         if not isinstance(text, str) or not text.strip():
             return ""  # Return empty if the field is missing or not a string
+
+        # Extract URL with regex pattern matching common image URL patterns
+        url_pattern = r'https?://\S+\.(?:jpg|jpeg|png|gif)'
+        matches = re.findall(url_pattern, text)
+
+        if matches:
+            # Return the first valid image URL found
+            return matches[0]
 
         # Remove c(" at the start and ") at the end
         text = re.sub(r'^c\(["\s]*', '', text)  # Remove 'c("'
         text = re.sub(r'["\s]*\)$', '', text)  # Remove '")'
-
         # Remove any leading and trailing quotes
         text = re.sub(r'^"+|"+$', '', text)
 
-        return text.strip()
+        # Check if the cleaned text is a valid URL
+        if text.startswith('http') and ('jpg' in text or 'jpeg' in text or 'png' in text or 'gif' in text):
+            return text.strip()
+
+        return ""  # Return empty if no valid URL found
 
     def run_indexer(self):
         """Reads the CSV, processes text data, and indexes it."""
@@ -67,7 +79,18 @@ class RecipeIndexer:
         # Process relevant fields
         df['RecipeIngredientParts'] = df['RecipeIngredientParts'].astype(str).apply(self.preprocess_text)
         df['RecipeInstructions'] = df['RecipeInstructions'].astype(str).apply(self.preprocess_text)
-        df['image_link'] = df['image_link'].astype(str).apply(self.preprocess_img)
+
+        # Handle image links - consolidate to a single field
+        df['image_url'] = ""
+
+        # Try to extract from 'image_link' first
+        if 'image_link' in df.columns:
+            df['image_url'] = df['image_link'].astype(str).apply(self.extract_image_url)
+
+        # If no valid URL found, try alternative fields (fallback mechanism)
+        mask = df['image_url'] == ""
+        if mask.any() and 'Images' in df.columns:
+            df.loc[mask, 'image_url'] = df.loc[mask, 'Images'].astype(str).apply(self.extract_image_url)
 
         # Combine 'title' and 'text' for indexing
         df['text_data'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join, axis=1)
@@ -91,7 +114,8 @@ class RecipeIndexer:
         results_df = self.recipes_df.nlargest(top_n, 'score').copy()
 
         return results_df[
-            ['RecipeId', 'Name', 'Description','image_link' , 'RecipeIngredientParts', 'RecipeInstructions', 'score', 'TotalTime',
+            ['RecipeId', 'Name', 'Description', 'image_url', 'RecipeIngredientParts', 'RecipeInstructions', 'score',
+             'TotalTime',
              'Calories']].to_dict('records')
 
 
