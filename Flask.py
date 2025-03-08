@@ -14,8 +14,7 @@ from flask_cors import CORS
 
 # Flask Setup
 app = Flask(__name__)
-CORS(app)
-app.config['SECRET_KEY'] = 'your_secret_key'
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)  # Allow all origins
 
 # User Data Storage (Mock Database)
 users = {}
@@ -49,7 +48,6 @@ class RecipeIndexer:
 
     @staticmethod
     def preprocess_img(text):
-        """Cleans image links by removing 'c("...")' format and fixing leading/trailing quotes."""
         if not isinstance(text, str) or not text.strip():
             return ""  # Return empty if the field is missing or not a string
 
@@ -100,6 +98,14 @@ class RecipeIndexer:
 # Initialize Indexer
 indexer = RecipeIndexer()
 
+@app.after_request
+def add_cors_headers(response):
+    """Ensure all responses contain correct CORS headers."""
+    response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -137,6 +143,16 @@ def search():
         return jsonify({'status': 'success', 'results': results})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
+
+@app.route('/search', methods=['OPTIONS'])
+def handle_options():
+    """Handle preflight CORS request."""
+    response = jsonify({'status': 'success', 'message': 'Preflight OK'})
+    response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response, 204
 
 
 if __name__ == '__main__':
