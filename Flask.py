@@ -54,18 +54,39 @@ def init_db():
         )
         ''')
 
-        # Create saved_recipes table (for user favorites)
+        # Create folders table
         cursor.execute('''
-        CREATE TABLE IF NOT EXISTS saved_recipes (
+        CREATE TABLE IF NOT EXISTS folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            recipe_id TEXT,
-            saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
         ''')
 
+        # Create saved_recipes table (with full recipe details)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS saved_recipes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            folder_id INTEGER NOT NULL,
+            recipe_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            image_url TEXT,
+            ingredients TEXT,
+            instructions TEXT,
+            total_time TEXT,
+            calories TEXT,
+            saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (folder_id) REFERENCES folders (id)
+        )
+        ''')
+
         db.commit()
+
 
 
 class RecipeIndexer:
@@ -190,21 +211,13 @@ def get_user_by_id(user_id):
     return cursor.fetchone()
 
 
-def authenticate_token():
-    """Validate the JWT token from request headers."""
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return None
+def authenticate_user(username):
+    """Check if a username exists in the database."""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+    return cursor.fetchone()  # Returns user record if found, else None
 
-    token = auth_header.split(' ')[1]
-    try:
-        payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-        user = get_user_by_username(payload['username'])
-        return user
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
-        return None
 
 
 @app.after_request
@@ -269,93 +282,6 @@ def search():
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-@app.route('/save_recipe', methods=['POST'])
-def save_recipe():
-    """Save a recipe to user's favorites."""
-    user = authenticate_token()
-    if not user:
-        return jsonify({'status': 'error', 'message': 'Authentication required'}), 401
-
-    data = request.json
-    recipe_id = data.get('recipe_id')
-
-    if not recipe_id:
-        return jsonify({'status': 'error', 'message': 'Recipe ID is required'}), 400
-
-    db = get_db()
-    cursor = db.cursor()
-
-    # Check if recipe is already saved by this user
-    cursor.execute(
-        "SELECT * FROM saved_recipes WHERE user_id = ? AND recipe_id = ?",
-        (user['id'], recipe_id)
-    )
-
-    if cursor.fetchone():
-        return jsonify({'status': 'error', 'message': 'Recipe already saved'}), 400
-
-    # Save the recipe
-    cursor.execute(
-        "INSERT INTO saved_recipes (user_id, recipe_id) VALUES (?, ?)",
-        (user['id'], recipe_id)
-    )
-    db.commit()
-
-    return jsonify({'status': 'success', 'message': 'Recipe saved successfully'})
-
-
-@app.route('/saved_recipes', methods=['GET'])
-def get_saved_recipes():
-    """Get all saved recipes for the authenticated user."""
-    user = authenticate_token()
-    if not user:
-        return jsonify({'status': 'error', 'message': 'Authentication required'}), 401
-
-    db = get_db()
-    cursor = db.cursor()
-    cursor.execute(
-        "SELECT recipe_id FROM saved_recipes WHERE user_id = ? ORDER BY saved_at DESC",
-        (user['id'],)
-    )
-
-    saved_recipe_ids = [row['recipe_id'] for row in cursor.fetchall()]
-
-    # Get full recipe details for each saved ID
-    saved_recipes = []
-    for recipe_id in saved_recipe_ids:
-        # Find recipe in indexer data
-        recipe = next(
-            (r for r in indexer.recipes_df.to_dict('records') if str(r['RecipeId']) == recipe_id),
-            None
-        )
-        if recipe:
-            saved_recipes.append(recipe)
-
-    return jsonify({'status': 'success', 'recipes': saved_recipes})
-
-
-@app.route('/remove_saved_recipe', methods=['DELETE'])
-def remove_saved_recipe():
-    """Remove a recipe from user's saved recipes."""
-    user = authenticate_token()
-    if not user:
-        return jsonify({'status': 'error', 'message': 'Authentication required'}), 401
-
-    recipe_id = request.args.get('recipe_id')
-    if not recipe_id:
-        return jsonify({'status': 'error', 'message': 'Recipe ID is required'}), 400
-
-    db = get_db()
-    cursor = db.cursor()
-    cursor.execute(
-        "DELETE FROM saved_recipes WHERE user_id = ? AND recipe_id = ?",
-        (user['id'], recipe_id)
-    )
-    db.commit()
-
-    return jsonify({'status': 'success', 'message': 'Recipe removed from saved list'})
-
-
 @app.route('/search', methods=['OPTIONS'])
 def handle_options():
     """Handle preflight CORS request."""
@@ -365,6 +291,129 @@ def handle_options():
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     response.headers["Access-Control-Allow-Credentials"] = "true"
     return response, 204
+
+@app.route('/create_folder', methods=['POST'])
+def create_folder():
+    """Create a personal folder for the user without using JWT."""
+    data = request.json
+    username = data.get('username')
+    folder_name = data.get('folder_name')
+
+    if not username or not folder_name:
+        return jsonify({'status': 'error', 'message': 'Username and folder name are required'}), 400
+
+    user = authenticate_user(username)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid username'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        "INSERT INTO folders (user_id, name) VALUES (?, ?)",
+        (user['id'], folder_name)
+    )
+    db.commit()
+
+    return jsonify({'status': 'success', 'message': 'Folder created successfully'})
+
+@app.route('/folders', methods=['POST'])
+def get_folders():
+    """Retrieve folders for a user without using JWT."""
+    data = request.json
+    username = data.get('username')
+
+    if not username:
+        return jsonify({'status': 'error', 'message': 'Username is required'}), 400
+
+    user = authenticate_user(username)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid username'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM folders WHERE user_id = ?", (user['id'],))
+    folders = [dict(row) for row in cursor.fetchall()]
+
+    return jsonify({'status': 'success', 'folders': folders})
+
+
+@app.route('/save_recipe', methods=['POST'])
+def save_recipe():
+    """Save a recipe for a specific user without using JWT."""
+    data = request.json
+    username = data.get('username')  # Get username from request
+    folder_id = data.get('folder_id')
+    recipe = data.get('recipe')
+
+    if not username or not folder_id or not recipe:
+        return jsonify({'status': 'error', 'message': 'Username, folder ID, and recipe data are required'}), 400
+
+    user = authenticate_user(username)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid username'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+
+    cursor.execute(
+        "INSERT INTO saved_recipes (user_id, folder_id, recipe_id, name, description, image_url, ingredients, instructions, total_time, calories) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            user['id'], folder_id, recipe.get('RecipeId'), recipe.get('Name'), recipe.get('Description'),
+            recipe.get('image_url'), recipe.get('RecipeIngredientParts'), recipe.get('RecipeInstructions'),
+            recipe.get('TotalTime'), recipe.get('Calories')
+        )
+    )
+    db.commit()
+
+    return jsonify({'status': 'success', 'message': 'Recipe saved successfully'})
+
+@app.route('/remove_saved_recipe', methods=['DELETE'])
+def remove_saved_recipe():
+    """Remove a saved recipe from a folder for a user without using JWT."""
+    data = request.json
+    username = data.get('username')
+    recipe_id = data.get('recipe_id')
+    folder_id = data.get('folder_id')
+
+    if not username or not recipe_id or not folder_id:
+        return jsonify({'status': 'error', 'message': 'Username, Recipe ID, and Folder ID are required'}), 400
+
+    user = authenticate_user(username)  # Verify username
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid username'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        "DELETE FROM saved_recipes WHERE user_id = ? AND folder_id = ? AND recipe_id = ?",
+        (user['id'], folder_id, recipe_id)
+    )
+    db.commit()
+
+    return jsonify({'status': 'success', 'message': 'Recipe removed from folder'})
+
+
+@app.route('/folder_recipes/<int:folder_id>', methods=['POST'])
+def get_folder_recipes(folder_id):
+    """Retrieve saved recipes for a user inside a specific folder without using JWT."""
+    data = request.json
+    username = data.get('username')  # Get username from request
+
+    if not username:
+        return jsonify({'status': 'error', 'message': 'Username is required'}), 400
+
+    user = authenticate_user(username)  # Verify username
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid username'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM saved_recipes WHERE user_id = ? AND folder_id = ?", (user['id'], folder_id))
+    recipes = [dict(row) for row in cursor.fetchall()]
+
+    return jsonify({'status': 'success', 'recipes': recipes})
+
+
 
 
 if __name__ == '__main__':
