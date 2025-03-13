@@ -316,6 +316,42 @@ def create_folder():
 
     return jsonify({'status': 'success', 'message': 'Folder created successfully'})
 
+
+@app.route('/delete_folder', methods=['DELETE'])
+def delete_folder():
+    """Delete a folder and all its saved recipes."""
+    data = request.json
+    username = data.get('username')
+    folder_id = data.get('folder_id')
+
+    if not username or not folder_id:
+        return jsonify({'status': 'error', 'message': 'Username and Folder ID are required'}), 400
+
+    user = get_user_by_username(username)  # Get user ID from username
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid username'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+
+    # Check if the folder exists
+    cursor.execute("SELECT * FROM folders WHERE id = ? AND user_id = ?", (folder_id, user['id']))
+    folder = cursor.fetchone()
+    if not folder:
+        return jsonify(
+            {'status': 'error', 'message': 'Folder not found or you don’t have permission to delete it'}), 403
+
+    # Delete all saved recipes inside the folder
+    cursor.execute("DELETE FROM saved_recipes WHERE folder_id = ?", (folder_id,))
+
+    # Delete the folder
+    cursor.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+
+    db.commit()
+
+    return jsonify({'status': 'success', 'message': 'Folder deleted successfully'})
+
+
 @app.route('/folders', methods=['POST'])
 def get_folders():
     """Retrieve folders for a user without using JWT."""
