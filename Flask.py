@@ -15,6 +15,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from textblob import TextBlob
+from rank_bm25 import BM25Okapi
 
 # Flask Setup
 app = Flask(__name__)
@@ -119,73 +120,58 @@ class RecipeIndexer:
         text = re.sub(r"^c[\"\s]*", "", text)  # Remove leading 'c', quotes, and spaces
         text = re.sub(r"[^\w\s.,/:-]", "", text)  # Keep valid characters
         text = re.sub(r"\s+", " ", text).strip()
-
         return text
-
-    import re
 
     @staticmethod
     def extract_image_url(text):
         """Extract and clean a valid image URL from the 'image_url' field."""
         if not isinstance(text, str) or not text.strip():
-            return ""  # Return empty if no valid image data
+            return ""
 
-        # Step 1: Remove unnecessary characters like c("..."), quotes, and brackets
         text = text.strip().replace("c(", "").replace(")", "").replace('"', '').replace('\\n', '')
-
-        # Step 2: Decode URL-encoded characters (fixes issues like %20 -> space)
         text = urllib.parse.unquote(text)
 
-        # Step 3: Extract valid image URLs using regex
         url_pattern = r'https?://\S+\.(?:jpg|jpeg|png|gif)'
         matches = re.findall(url_pattern, text)
 
         if matches:
-            return matches[0]  # Return first valid image URL
+            return matches[0]
 
-        return text if text.startswith('http') else ""  # Return original text if valid
+        return text if text.startswith('http') else ""
 
     def run_indexer(self):
-        """Reads the CSV, processes text data, and indexes it."""
+        """Reads the CSV, processes text data, and indexes it using BM25."""
         df = pd.read_csv(self.file_path)
 
-        # Process relevant fields
         df['RecipeIngredientParts'] = df['RecipeIngredientParts'].astype(str).apply(self.preprocess_text)
         df['RecipeInstructions'] = df['RecipeInstructions'].astype(str).apply(self.preprocess_text)
 
-        # Handle image links - consolidate to a single field
         df['image_url'] = ""
-
-        # Try to extract from 'image_link' first
         if 'image_link' in df.columns:
             df['image_url'] = df['image_link'].astype(str).apply(self.extract_image_url)
 
-        # If no valid URL found, try alternative fields (fallback mechanism)
         mask = df['image_url'] == ""
         if mask.any() and 'Images' in df.columns:
             df.loc[mask, 'image_url'] = df.loc[mask, 'Images'].astype(str).apply(self.extract_image_url)
 
-        # Combine 'title' and 'text' for indexing
-        df['text_data'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join, axis=1)
-        corpus = df['text_data'].tolist()
+        # Tokenize text for BM25
+        df['tokenized_text'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join, axis=1)
+        self.tokenized_corpus = [doc.split() for doc in df['tokenized_text'].tolist()]
 
-        self.vectorizer = TfidfVectorizer(stop_words='english')
-        self.tfidf_matrix = self.vectorizer.fit_transform(corpus)
+        self.bm25 = BM25Okapi(self.tokenized_corpus)
         self.recipes_df = df
 
         with open(self.stored_file, 'wb') as f:
             pickle.dump(self.__dict__, f)
 
-        print("TF-IDF index created successfully.")
+        print("BM25 index created successfully.")
 
     def search_query(self, query, top_n=50):
-        query = self.preprocess_text(query)
-        query_vector = self.vectorizer.transform([query])
-        similarity_scores = cosine_similarity(query_vector, self.tfidf_matrix).flatten()
+        query = self.preprocess_text(query).split()
+        scores = self.bm25.get_scores(query)
+        self.recipes_df['score'] = scores
 
-        self.recipes_df['score'] = similarity_scores
         results_df = self.recipes_df.nlargest(top_n, 'score').copy()
-
         return results_df[
             ['RecipeId', 'Name', 'Description', 'image_url', 'RecipeIngredientParts', 'RecipeInstructions', 'score',
              'TotalTime', 'Calories']].to_dict('records')
@@ -280,26 +266,19 @@ def login():
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('query', '').strip()
-
     if not query:
         return jsonify({'status': 'error', 'message': 'Empty search query'}), 400
 
-    # Correct spelling using TextBlob
     corrected_query = str(TextBlob(query).correct())
-
-    # Only return corrected_query if it's different from the input
     if corrected_query.lower() == query.lower():
-        corrected_query = None  # No need to suggest if spelling is already correct
+        corrected_query = None
 
     try:
         results = indexer.search_query(query, top_n=50)
-        return jsonify({
-            'status': 'success',
-            'results': results,
-            'corrected_query': corrected_query  # Send only if different
-        })
+        return jsonify({'status': 'success', 'results': results, 'corrected_query': corrected_query})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
+
 
 
 @app.route('/create_folder', methods=['POST'])
