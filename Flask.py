@@ -67,25 +67,29 @@ def init_db():
         )
         ''')
 
-        # Create saved_recipes table (with full recipe details)
+        # Modify saved_recipes table to include a rating column (1-5)
         cursor.execute('''
-        CREATE TABLE IF NOT EXISTS saved_recipes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            folder_id INTEGER NOT NULL,
-            recipe_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            description TEXT,
-            image_url TEXT,
-            ingredients TEXT,
-            instructions TEXT,
-            total_time TEXT,
-            calories TEXT,
-            saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (id),
-            FOREIGN KEY (folder_id) REFERENCES folders (id)
-        )
-        ''')
+                CREATE TABLE IF NOT EXISTS saved_recipes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    folder_id INTEGER NOT NULL,
+                    recipe_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    image_url TEXT,
+                    ingredients TEXT,
+                    instructions TEXT,
+                    total_time TEXT,
+                    calories TEXT,
+                    rating INTEGER DEFAULT NULL,  -- Store rating from 1-5
+                    saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id),
+                    FOREIGN KEY (folder_id) REFERENCES folders (id)
+                )
+                ''')
+
+
+
 
         db.commit()
 
@@ -374,14 +378,51 @@ def get_folders():
 
 @app.route('/save_recipe', methods=['POST'])
 def save_recipe():
-    """Save a recipe for a specific user without using JWT."""
+    """Save a recipe for a specific user with a rating."""
     data = request.json
-    username = data.get('username')  # Get username from request
+    username = data.get('username')
     folder_id = data.get('folder_id')
     recipe = data.get('recipe')
+    rating = data.get('rating')  # Capture rating
 
-    if not username or not folder_id or not recipe:
-        return jsonify({'status': 'error', 'message': 'Username, folder ID, and recipe data are required'}), 400
+    if not username or not folder_id or not recipe or rating is None:
+        return jsonify({'status': 'error', 'message': 'Username, folder ID, recipe data, and rating are required'}), 400
+
+    user = authenticate_user(username)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid username'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+
+    # Insert recipe along with rating
+    cursor.execute(
+        "INSERT INTO saved_recipes (user_id, folder_id, recipe_id, name, description, image_url, ingredients, instructions, total_time, calories, rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            user['id'], folder_id, recipe.get('RecipeId'), recipe.get('Name'), recipe.get('Description'),
+            recipe.get('image_url'), recipe.get('RecipeIngredientParts'), recipe.get('RecipeInstructions'),
+            recipe.get('TotalTime'), recipe.get('Calories'), rating
+        )
+    )
+    db.commit()
+
+    return jsonify({'status': 'success', 'message': 'Recipe saved with rating successfully'})
+
+
+@app.route('/update_rating', methods=['POST'])
+def update_rating():
+    """Update the rating of a saved recipe in a folder."""
+    data = request.json
+    username = data.get('username')
+    folder_id = data.get('folder_id')
+    recipe_id = data.get('recipe_id')
+    rating = data.get('rating')
+
+    if not username or not folder_id or not recipe_id or rating is None:
+        return jsonify({'status': 'error', 'message': 'Username, Folder ID, Recipe ID, and rating are required'}), 400
+
+    if rating not in range(1, 6):  # Rating must be between 1 and 5
+        return jsonify({'status': 'error', 'message': 'Rating must be between 1 and 5'}), 400
 
     user = authenticate_user(username)
     if not user:
@@ -391,16 +432,13 @@ def save_recipe():
     cursor = db.cursor()
 
     cursor.execute(
-        "INSERT INTO saved_recipes (user_id, folder_id, recipe_id, name, description, image_url, ingredients, instructions, total_time, calories) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            user['id'], folder_id, recipe.get('RecipeId'), recipe.get('Name'), recipe.get('Description'),
-            recipe.get('image_url'), recipe.get('RecipeIngredientParts'), recipe.get('RecipeInstructions'),
-            recipe.get('TotalTime'), recipe.get('Calories')
-        )
+        "UPDATE saved_recipes SET rating = ? WHERE user_id = ? AND folder_id = ? AND recipe_id = ?",
+        (rating, user['id'], folder_id, recipe_id)
     )
     db.commit()
 
-    return jsonify({'status': 'success', 'message': 'Recipe saved successfully'})
+    return jsonify({'status': 'success', 'message': 'Rating updated successfully'})
+
 
 @app.route('/remove_saved_recipe', methods=['DELETE'])
 def remove_saved_recipe():
@@ -430,23 +468,27 @@ def remove_saved_recipe():
 
 @app.route('/folder_recipes/<int:folder_id>', methods=['POST'])
 def get_folder_recipes(folder_id):
-    """Retrieve saved recipes for a user inside a specific folder without using JWT."""
+    """Retrieve saved recipes for a user inside a specific folder, ranked by rating."""
     data = request.json
-    username = data.get('username')  # Get username from request
+    username = data.get('username')
 
     if not username:
         return jsonify({'status': 'error', 'message': 'Username is required'}), 400
 
-    user = authenticate_user(username)  # Verify username
+    user = authenticate_user(username)
     if not user:
         return jsonify({'status': 'error', 'message': 'Invalid username'}), 401
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM saved_recipes WHERE user_id = ? AND folder_id = ?", (user['id'], folder_id))
+
+    # Fetch recipes sorted by rating (higher rating first)
+    cursor.execute("SELECT * FROM saved_recipes WHERE user_id = ? AND folder_id = ? ORDER BY rating DESC, saved_at DESC", (user['id'], folder_id))
     recipes = [dict(row) for row in cursor.fetchall()]
 
     return jsonify({'status': 'success', 'recipes': recipes})
+
+
 
 
 
