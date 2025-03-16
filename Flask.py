@@ -14,6 +14,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
+from textblob import TextBlob
 
 # Flask Setup
 app = Flask(__name__)
@@ -275,25 +276,31 @@ def login():
 
     return jsonify({'status': 'success', 'message': 'Login successful', 'user_id': user['id']})
 
+
 @app.route('/search', methods=['GET'])
 def search():
-    query = request.args.get('query', '')
+    query = request.args.get('query', '').strip()
+
+    if not query:
+        return jsonify({'status': 'error', 'message': 'Empty search query'}), 400
+
+    # Correct spelling using TextBlob
+    corrected_query = str(TextBlob(query).correct())
+
+    # Only return corrected_query if it's different from the input
+    if corrected_query.lower() == query.lower():
+        corrected_query = None  # No need to suggest if spelling is already correct
+
     try:
         results = indexer.search_query(query, top_n=50)
-        return jsonify({'status': 'success', 'results': results})
+        return jsonify({
+            'status': 'success',
+            'results': results,
+            'corrected_query': corrected_query  # Send only if different
+        })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
-
-@app.route('/search', methods=['OPTIONS'])
-def handle_options():
-    """Handle preflight CORS request."""
-    response = jsonify({'status': 'success', 'message': 'Preflight OK'})
-    response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response, 204
 
 @app.route('/create_folder', methods=['POST'])
 def create_folder():
