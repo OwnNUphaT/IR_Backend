@@ -1,5 +1,7 @@
 import os
 import pickle
+import urllib
+
 import pandas as pd
 import re
 import time
@@ -115,31 +117,28 @@ class RecipeIndexer:
 
         return text
 
+    import re
+
     @staticmethod
     def extract_image_url(text):
-        """Extract and clean the image URL from various formats."""
+        """Extract and clean a valid image URL from the 'image_url' field."""
         if not isinstance(text, str) or not text.strip():
-            return ""  # Return empty if the field is missing or not a string
+            return ""  # Return empty if no valid image data
 
-        # Extract URL with regex pattern matching common image URL patterns
+        # Step 1: Remove unnecessary characters like c("..."), quotes, and brackets
+        text = text.strip().replace("c(", "").replace(")", "").replace('"', '').replace('\\n', '')
+
+        # Step 2: Decode URL-encoded characters (fixes issues like %20 -> space)
+        text = urllib.parse.unquote(text)
+
+        # Step 3: Extract valid image URLs using regex
         url_pattern = r'https?://\S+\.(?:jpg|jpeg|png|gif)'
         matches = re.findall(url_pattern, text)
 
         if matches:
-            # Return the first valid image URL found
-            return matches[0]
+            return matches[0]  # Return first valid image URL
 
-        # Remove c(" at the start and ") at the end
-        text = re.sub(r'^c\(["\s]*', '', text)  # Remove 'c("'
-        text = re.sub(r'["\s]*\)$', '', text)  # Remove '")'
-        # Remove any leading and trailing quotes
-        text = re.sub(r'^"+|"+$', '', text)
-
-        # Check if the cleaned text is a valid URL
-        if text.startswith('http') and ('jpg' in text or 'jpeg' in text or 'png' in text or 'gif' in text):
-            return text.strip()
-
-        return ""  # Return empty if no valid URL found
+        return text if text.startswith('http') else ""  # Return original text if valid
 
     def run_indexer(self):
         """Reads the CSV, processes text data, and indexes it."""
