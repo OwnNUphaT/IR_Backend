@@ -2,6 +2,7 @@ import os
 import pickle
 import urllib
 
+import numpy as np
 import pandas as pd
 import re
 import time
@@ -140,7 +141,6 @@ class RecipeIndexer:
         return text if text.startswith('http') else ""
 
     def run_indexer(self):
-        """Reads the CSV, processes text data, and indexes it using BM25."""
         df = pd.read_csv(self.file_path)
 
         df['RecipeIngredientParts'] = df['RecipeIngredientParts'].astype(str).apply(self.preprocess_text)
@@ -154,27 +154,27 @@ class RecipeIndexer:
         if mask.any() and 'Images' in df.columns:
             df.loc[mask, 'image_url'] = df.loc[mask, 'Images'].astype(str).apply(self.extract_image_url)
 
-        # Tokenize text for BM25
-        df['tokenized_text'] = df[['RecipeIngredientParts', 'RecipeInstructions']].fillna('').agg(' '.join, axis=1)
-        self.tokenized_corpus = [doc.split() for doc in df['tokenized_text'].tolist()]
-
-        self.bm25 = BM25Okapi(self.tokenized_corpus)
-        self.recipes_df = df
+        # Combine text and vectorize
+        df['combined_text'] = df[['RecipeIngredientParts', 'RecipeInstructions']].agg(' '.join, axis=1)
+        self.vectorizer = TfidfVectorizer(max_features=5000)
+        self.tfidf_matrix = self.vectorizer.fit_transform(df['combined_text'])
+        self.recipes_df = df.reset_index(drop=True)
 
         with open(self.stored_file, 'wb') as f:
             pickle.dump(self.__dict__, f)
 
-        print("BM25 index created successfully.")
+        print("TF-IDF index created successfully.")
 
     def search_query(self, query, top_n=50):
-        query = self.preprocess_text(query).split()
-        scores = self.bm25.get_scores(query)
-        self.recipes_df['score'] = scores
-
-        results_df = self.recipes_df.nlargest(top_n, 'score').copy()
+        query = self.preprocess_text(query)
+        query_vec = self.vectorizer.transform([query])
+        similarities = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
+        top_indices = np.argpartition(similarities, -top_n)[-top_n:]
+        top_indices = top_indices[np.argsort(-similarities[top_indices])]
+        results_df = self.recipes_df.iloc[top_indices].copy()
         return results_df[
-            ['RecipeId', 'Name', 'Description', 'image_url', 'RecipeIngredientParts', 'RecipeInstructions', 'score',
-             'TotalTime', 'Calories']].to_dict('records')
+            ['RecipeId', 'Name', 'Description', 'image_url', 'RecipeIngredientParts',
+             'RecipeInstructions', 'TotalTime', 'Calories']].to_dict('records')
 
 
 # Initialize database
@@ -488,47 +488,21 @@ def personalized_recommendation():
 
     db = get_db()
     cursor = db.cursor()
-
-    # Use a single query to get both recipes and saved IDs
-    cursor.execute("""
-        SELECT r.ingredients, r.instructions, 
-               GROUP_CONCAT(DISTINCT sr.recipe_id) as saved_ids
-        FROM saved_recipes r
-        JOIN (SELECT user_id, recipe_id FROM saved_recipes WHERE user_id = ?) sr
-        ON sr.user_id = ?
-        WHERE r.user_id = ?
-        GROUP BY r.user_id
-    """, (user['id'], user['id'], user['id']))
-
-    result = cursor.fetchone()
-    if not result:
+    cursor.execute("SELECT recipe_id, ingredients, instructions FROM saved_recipes WHERE user_id = ?", (user['id'],))
+    saved_rows = cursor.fetchall()
+    if not saved_rows:
         return jsonify({'status': 'error', 'message': 'No saved recipes.'}), 404
 
-    # Parse saved IDs into a set for faster lookups
-    saved_ids = set(result['saved_ids'].split(',') if result['saved_ids'] else [])
+    saved_ids = {row['recipe_id'] for row in saved_rows}
+    combined_query = ' '.join(f"{row['ingredients']} {row['instructions']}" for row in saved_rows)
 
-    # Process all recipes data at once
-    cursor.execute("SELECT ingredients, instructions FROM saved_recipes WHERE user_id = ?", (user['id'],))
-    saved_data = cursor.fetchall()
-
-    # Cache the combined query for potential reuse
-    combined_query = ' '.join(f"{row['ingredients']} {row['instructions']}" for row in saved_data)
-
-    # Use vectorized operations if possible with your indexer
-    candidates = indexer.search_query(combined_query, top_n=20)  # Fetch more to account for filtering
-
-    # Optimize filtering with set operations
-    recommendations = []
-    count = 0
-
-    for r in candidates:
-        if str(r['RecipeId']) not in saved_ids:
-            recommendations.append(r)
-            count += 1
-            if count >= 6:
-                break
+    candidates = indexer.search_query(combined_query, top_n=30)
+    df_candidates = pd.DataFrame(candidates)
+    df_candidates = df_candidates[~df_candidates['RecipeId'].astype(str).isin(saved_ids)]
+    recommendations = df_candidates.head(6).to_dict('records')
 
     return jsonify({'status': 'success', 'recommendations': recommendations})
+
 
 
 @app.route('/generate_suggestions', methods=['POST'])
@@ -546,52 +520,21 @@ def generate_suggestions():
 
     db = get_db()
     cursor = db.cursor()
-
-    # Combine both queries into one to reduce database round trips
-    cursor.execute("""
-        SELECT 
-            r.ingredients, r.instructions, 
-            GROUP_CONCAT(DISTINCT sr.recipe_id) as folder_recipe_ids
-        FROM saved_recipes r
-        LEFT JOIN (
-            SELECT recipe_id 
-            FROM saved_recipes 
-            WHERE user_id = ? AND folder_id = ?
-        ) sr ON 1=1
-        WHERE r.user_id = ? AND r.folder_id = ?
-        GROUP BY r.folder_id
-    """, (user['id'], folder_id, user['id'], folder_id))
-
-    result = cursor.fetchone()
-    if not result:
+    cursor.execute("SELECT recipe_id, ingredients, instructions FROM saved_recipes WHERE user_id = ? AND folder_id = ?", (user['id'], folder_id))
+    folder_rows = cursor.fetchall()
+    if not folder_rows:
         return jsonify({'status': 'error', 'message': 'Folder is empty.'}), 404
 
-    # Parse folder recipe IDs
-    folder_recipe_ids = set(result['folder_recipe_ids'].split(',') if result['folder_recipe_ids'] else [])
+    folder_ids = {row['recipe_id'] for row in folder_rows}
+    combined_query = ' '.join(f"{row['ingredients']} {row['instructions']}" for row in folder_rows)
 
-    # Get all folder data in one go
-    cursor.execute("SELECT ingredients, instructions FROM saved_recipes WHERE user_id = ? AND folder_id = ?",
-                   (user['id'], folder_id))
-    folder_data = cursor.fetchall()
-
-    # Cache and reuse the combined query
-    combined_query = ' '.join(f"{row['ingredients']} {row['instructions']}" for row in folder_data)
-
-    # Search with a batch operation and get more candidates to account for filtering
-    suggestions = indexer.search_query(combined_query, top_n=20)
-
-    # Use early termination in filtering
-    final_suggestions = []
-    count = 0
-
-    for r in suggestions:
-        if str(r['RecipeId']) not in folder_recipe_ids:
-            final_suggestions.append(r)
-            count += 1
-            if count >= 5:
-                break
+    suggestions = indexer.search_query(combined_query, top_n=30)
+    df_suggestions = pd.DataFrame(suggestions)
+    df_suggestions = df_suggestions[~df_suggestions['RecipeId'].astype(str).isin(folder_ids)]
+    final_suggestions = df_suggestions.head(5).to_dict('records')
 
     return jsonify({'status': 'success', 'suggestions': final_suggestions})
+
 
 
 # Optional caching layer if these endpoints are called frequently
