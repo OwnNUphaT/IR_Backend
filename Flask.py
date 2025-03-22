@@ -475,6 +475,140 @@ def get_folder_recipes(folder_id):
     return jsonify({'status': 'success', 'recipes': recipes})
 
 
+@app.route('/personalized_recommendation', methods=['POST'])
+def personalized_recommendation():
+    data = request.json
+    username = data.get('username')
+    if not username:
+        return jsonify({'status': 'error', 'message': 'Username required'}), 400
+
+    user = authenticate_user(username)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid user'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+
+    # Use a single query to get both recipes and saved IDs
+    cursor.execute("""
+        SELECT r.ingredients, r.instructions, 
+               GROUP_CONCAT(DISTINCT sr.recipe_id) as saved_ids
+        FROM saved_recipes r
+        JOIN (SELECT user_id, recipe_id FROM saved_recipes WHERE user_id = ?) sr
+        ON sr.user_id = ?
+        WHERE r.user_id = ?
+        GROUP BY r.user_id
+    """, (user['id'], user['id'], user['id']))
+
+    result = cursor.fetchone()
+    if not result:
+        return jsonify({'status': 'error', 'message': 'No saved recipes.'}), 404
+
+    # Parse saved IDs into a set for faster lookups
+    saved_ids = set(result['saved_ids'].split(',') if result['saved_ids'] else [])
+
+    # Process all recipes data at once
+    cursor.execute("SELECT ingredients, instructions FROM saved_recipes WHERE user_id = ?", (user['id'],))
+    saved_data = cursor.fetchall()
+
+    # Cache the combined query for potential reuse
+    combined_query = ' '.join(f"{row['ingredients']} {row['instructions']}" for row in saved_data)
+
+    # Use vectorized operations if possible with your indexer
+    candidates = indexer.search_query(combined_query, top_n=20)  # Fetch more to account for filtering
+
+    # Optimize filtering with set operations
+    recommendations = []
+    count = 0
+
+    for r in candidates:
+        if str(r['RecipeId']) not in saved_ids:
+            recommendations.append(r)
+            count += 1
+            if count >= 6:
+                break
+
+    return jsonify({'status': 'success', 'recommendations': recommendations})
+
+
+@app.route('/generate_suggestions', methods=['POST'])
+def generate_suggestions():
+    data = request.json
+    username = data.get('username')
+    folder_id = data.get('folder_id')
+
+    if not username or not folder_id:
+        return jsonify({'status': 'error', 'message': 'Username and folder_id required'}), 400
+
+    user = authenticate_user(username)
+    if not user:
+        return jsonify({'status': 'error', 'message': 'Invalid user'}), 401
+
+    db = get_db()
+    cursor = db.cursor()
+
+    # Combine both queries into one to reduce database round trips
+    cursor.execute("""
+        SELECT 
+            r.ingredients, r.instructions, 
+            GROUP_CONCAT(DISTINCT sr.recipe_id) as folder_recipe_ids
+        FROM saved_recipes r
+        LEFT JOIN (
+            SELECT recipe_id 
+            FROM saved_recipes 
+            WHERE user_id = ? AND folder_id = ?
+        ) sr ON 1=1
+        WHERE r.user_id = ? AND r.folder_id = ?
+        GROUP BY r.folder_id
+    """, (user['id'], folder_id, user['id'], folder_id))
+
+    result = cursor.fetchone()
+    if not result:
+        return jsonify({'status': 'error', 'message': 'Folder is empty.'}), 404
+
+    # Parse folder recipe IDs
+    folder_recipe_ids = set(result['folder_recipe_ids'].split(',') if result['folder_recipe_ids'] else [])
+
+    # Get all folder data in one go
+    cursor.execute("SELECT ingredients, instructions FROM saved_recipes WHERE user_id = ? AND folder_id = ?",
+                   (user['id'], folder_id))
+    folder_data = cursor.fetchall()
+
+    # Cache and reuse the combined query
+    combined_query = ' '.join(f"{row['ingredients']} {row['instructions']}" for row in folder_data)
+
+    # Search with a batch operation and get more candidates to account for filtering
+    suggestions = indexer.search_query(combined_query, top_n=20)
+
+    # Use early termination in filtering
+    final_suggestions = []
+    count = 0
+
+    for r in suggestions:
+        if str(r['RecipeId']) not in folder_recipe_ids:
+            final_suggestions.append(r)
+            count += 1
+            if count >= 5:
+                break
+
+    return jsonify({'status': 'success', 'suggestions': final_suggestions})
+
+
+# Optional caching layer if these endpoints are called frequently
+from functools import lru_cache
+
+
+# Cache user authentication results
+@lru_cache(maxsize=100)
+def cached_authenticate_user(username):
+    return authenticate_user(username)
+
+
+# If the indexer search is expensive, consider adding a cache
+@lru_cache(maxsize=50)
+def cached_search_query(query, top_n):
+    return indexer.search_query(query, top_n)
+
 
 
 
