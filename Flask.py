@@ -91,8 +91,16 @@ def init_db():
                 )
                 ''')
 
-
-
+        # Track recipe views
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS recipe_views (
+                recipe_id TEXT PRIMARY KEY,
+                name TEXT,
+                description TEXT,
+                image_url TEXT,
+                view_count INTEGER DEFAULT 0
+            )
+        ''')
 
         db.commit()
 
@@ -535,6 +543,44 @@ def generate_suggestions():
 
     return jsonify({'status': 'success', 'suggestions': final_suggestions})
 
+@app.route('/track_view', methods=['POST'])
+def track_view():
+    data = request.json
+    recipe = data.get('recipe')
+
+    if not recipe or not recipe.get('RecipeId'):
+        return jsonify({'status': 'error', 'message': 'Recipe data is required'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+
+    # Insert or update view count
+    cursor.execute('''
+        INSERT INTO recipe_views (recipe_id, name, description, image_url, view_count)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT(recipe_id)
+        DO UPDATE SET view_count = view_count + 1
+    ''', (
+        recipe['RecipeId'], recipe['Name'], recipe['Description'], recipe['image_url']
+    ))
+    db.commit()
+
+    return jsonify({'status': 'success', 'message': 'View counted'})
+
+@app.route('/most_viewed', methods=['GET'])
+def most_viewed():
+    db = get_db()
+    cursor = db.cursor()
+
+    cursor.execute('''
+        SELECT recipe_id, name, description, image_url, view_count
+        FROM recipe_views
+        ORDER BY view_count DESC
+        LIMIT 10
+    ''')
+
+    recipes = [dict(row) for row in cursor.fetchall()]
+    return jsonify({'status': 'success', 'most_viewed': recipes})
 
 
 # Optional caching layer if these endpoints are called frequently
