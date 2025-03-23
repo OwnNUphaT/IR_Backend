@@ -5,12 +5,8 @@ import urllib
 import numpy as np
 import pandas as pd
 import re
-import time
-import jwt
 import bcrypt
 import sqlite3
-from datetime import datetime, timedelta
-from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from flask import Flask, request, jsonify, g
@@ -597,9 +593,6 @@ def cached_authenticate_user(username):
 @lru_cache(maxsize=50)
 def cached_search_query(query, top_n):
     return indexer.search_query(query, top_n)
-
-
-
 
 
 if __name__ == '__main__':
